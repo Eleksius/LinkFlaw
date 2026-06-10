@@ -1,5 +1,5 @@
 from aiogram import Router, Bot, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -17,7 +17,16 @@ class CreateLinkStates(StatesGroup):
     waiting_label = State()
 
 
-# ── Хелпер: показать список каналов пользователя ──────────────────────
+# ── Общий обработчик отмены для всех FSM ─────────────────────────────
+
+@router.callback_query(F.data == "cancel_action")
+async def cb_cancel_action(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Действие отменено.")
+    await callback.answer()
+
+
+# ── Хелпер: показать список каналов ──────────────────────────────────
 
 async def show_channels(target: Message | CallbackQuery, user_id: int):
     channels = await queries.get_channels(user_id)
@@ -25,7 +34,7 @@ async def show_channels(target: Message | CallbackQuery, user_id: int):
     if not channels:
         text += (
             "У тебя пока нет добавленных каналов.\n\n"
-            "Чтобы добавить канал:\n"
+            "<b>Как добавить:</b>\n"
             "1. Добавь бота в канал как <b>администратора</b>\n"
             "2. Дай право <b>Пригласительные ссылки</b>\n"
             "3. Перешли сюда любое сообщение из этого канала"
@@ -34,7 +43,7 @@ async def show_channels(target: Message | CallbackQuery, user_id: int):
         await msg.answer(text, parse_mode="HTML")
         return
 
-    text += "Нажми 🗑 Удалить рядом с каналом, чтобы его отключить."
+    text += "Нажми на канал чтобы посмотреть ссылки, или 🗑 чтобы удалить."
     kb = channels_manage_kb(channels)
     if isinstance(target, Message):
         await target.answer(text, reply_markup=kb, parse_mode="HTML")
@@ -42,15 +51,13 @@ async def show_channels(target: Message | CallbackQuery, user_id: int):
         await target.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 
-# ── Кнопка "📢 Мои каналы" и команда /channels ────────────────────────
+# ── Мои каналы ────────────────────────────────────────────────────────
 
 @router.message(F.text == "📢 Мои каналы")
 @router.message(Command("channels"))
 async def cmd_channels(message: Message):
     await show_channels(message, message.from_user.id)
 
-
-# ── Просмотр ссылок канала ────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("ch_info:"))
 async def cb_channel_info(callback: CallbackQuery):
@@ -70,12 +77,12 @@ async def cb_channel_info(callback: CallbackQuery):
         for lnk in links:
             text += fmt_link_row(lnk["label"], lnk["link"], lnk["joins_count"], lnk["created_at"])
 
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ К каналам", callback_data="back_channels")]
     ])
-    await callback.message.edit_text(text, parse_mode="HTML",
-                                     disable_web_page_preview=True, reply_markup=kb)
+    await callback.message.edit_text(
+        text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb
+    )
     await callback.answer()
 
 
@@ -91,17 +98,15 @@ async def cb_back_channels(callback: CallbackQuery):
 async def cb_channel_delete(callback: CallbackQuery):
     channel_id = int(callback.data.split(":")[1])
     user_id = callback.from_user.id
-
     channel = await queries.get_channel(channel_id, user_id)
     if not channel:
         return await callback.answer("Канал не найден.", show_alert=True)
 
-    kb = confirm_delete_channel_kb(channel_id)
     await callback.message.edit_text(
         f"❓ Удалить канал <b>{channel['channel_title']}</b>?\n\n"
         "Все ссылки этого канала будут деактивированы.",
         parse_mode="HTML",
-        reply_markup=kb
+        reply_markup=confirm_delete_channel_kb(channel_id)
     )
     await callback.answer()
 
@@ -110,7 +115,6 @@ async def cb_channel_delete(callback: CallbackQuery):
 async def cb_channel_delete_confirm(callback: CallbackQuery):
     channel_id = int(callback.data.split(":")[1])
     user_id = callback.from_user.id
-
     channel = await queries.get_channel(channel_id, user_id)
     if not channel:
         return await callback.answer("Канал не найден.", show_alert=True)
@@ -127,7 +131,7 @@ async def cb_channel_delete_cancel(callback: CallbackQuery):
     await callback.answer()
 
 
-# ── Создать ссылку: кнопка + команда ──────────────────────────────────
+# ── Создать ссылку ────────────────────────────────────────────────────
 
 @router.message(F.text == "🔗 Создать ссылку")
 @router.message(Command("create_link"))
@@ -156,11 +160,14 @@ async def cb_select_channel(callback: CallbackQuery, state: FSMContext):
         return await callback.answer("Канал не найден.", show_alert=True)
 
     await state.update_data(channel_id=channel_id, channel_title=channel["channel_title"])
+
+    from handlers.keyboards import cancel_kb
     await callback.message.edit_text(
-        f"✅ Канал: <b>{channel['channel_title']}</b>\n\n"
+        f"📢 Канал: <b>{channel['channel_title']}</b>\n\n"
         "✏️ Введи метку для ссылки\n"
         "<i>Например: Реклама у @durov, Баннер апрель</i>",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=cancel_kb()
     )
     await state.set_state(CreateLinkStates.waiting_label)
     await callback.answer()
@@ -194,10 +201,9 @@ async def process_label(message: Message, state: FSMContext, bot: Bot):
             f"✅ Ссылка создана!\n\n"
             f"📢 Канал: <b>{channel_title}</b>\n"
             f"🏷 Метка: <b>{label}</b>\n\n"
-            f"🔗 Ссылка:\n<code>{link_url}</code>",
+            f"🔗 <code>{link_url}</code>",
             parse_mode="HTML"
         )
-        # Предложить подставить в шаблон
         await ask_apply_creative(message, message.from_user.id, link_url)
     except Exception as e:
         await message.answer(
@@ -208,36 +214,46 @@ async def process_label(message: Message, state: FSMContext, bot: Bot):
         )
 
 
-# ── Список ссылок: кнопка + команда ──────────────────────────────────
+# ── Мои ссылки + статистика (объединено) ─────────────────────────────
 
-@router.message(F.text == "📋 Мои ссылки")
+@router.message(F.text == "📊 Мои ссылки")
 @router.message(Command("links"))
-async def cmd_links(message: Message):
+@router.message(Command("stats"))
+async def cmd_links_stats(message: Message):
     user_id = message.from_user.id
-    links = await queries.get_all_links(user_id)
+    total = await queries.get_my_stats(user_id)
+    channels = await queries.get_channels(user_id)
 
-    if not links:
+    if not channels:
         return await message.answer(
-            "📭 У тебя пока нет активных ссылок.\n"
-            "Создай первую через «🔗 Создать ссылку»."
+            "📭 У тебя пока нет каналов и ссылок.\n"
+            "Добавь канал и создай первую ссылку!"
         )
 
-    by_channel: dict[str, list] = {}
-    for lnk in links:
-        title = lnk["channel_title"] or str(lnk["channel_id"])
-        by_channel.setdefault(title, []).append(lnk)
+    text = (
+        "📊 <b>Мои ссылки</b>\n\n"
+        f"📢 Каналов: <b>{total['total_channels']}</b>  "
+        f"🔗 Ссылок: <b>{total['total_links']}</b>  "
+        f"📥 Переходов: <b>{total['total_joins']}</b>\n"
+    )
 
-    text = "🔗 <b>Мои активные ссылки</b>\n\n"
-    for channel_title, channel_links in by_channel.items():
-        text += f"📢 <b>{channel_title}</b>\n"
-        for lnk in channel_links:
+    has_links = False
+    for ch in channels:
+        links = await queries.get_stats_by_channel(ch["channel_id"], user_id)
+        if not links:
+            continue
+        has_links = True
+        text += f"\n━━━━━━━━━━━━━━━━━━━━\n📢 <b>{ch['channel_title']}</b>\n"
+        for lnk in links:
             text += fmt_link_row(lnk["label"], lnk["link"], lnk["joins_count"], lnk["created_at"])
-        text += "\n"
+
+    if not has_links:
+        text += "\nСсылок пока нет. Создай через «🔗 Создать ссылку»."
 
     await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
-# ── Авто-регистрация канала при пересылке сообщения ───────────────────
+# ── Авто-регистрация канала при пересылке ────────────────────────────
 
 @router.message(F.forward_from_chat)
 async def forward_from_channel(message: Message):
