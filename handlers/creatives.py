@@ -379,28 +379,28 @@ async def cb_apply_creative(callback: CallbackQuery, bot: Bot):
     if not c:
         return await callback.answer("Шаблон не найден.", show_alert=True)
 
+    # Генерируем результат и сначала отправляем заголовок
     result = apply_template(c["template"], link_url)
-    full_text = (
-        f"✏️ <b>{html.escape(c['name'])}</b>\n\n"
-        f"{result}\n\n"
-        "<i>Скопируй и вставь в рекламный пост.</i>"
-    )
+    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой креатив.</i>"
 
-    # Удаляем сообщение с кнопками (если возможно), затем отправляем единое сообщение с результатом
+    # Удаляем сообщение с кнопками (если возможно)
     try:
         await callback.message.delete()
     except Exception:
         pass
 
+    # Сначала шлём заголовок, затем чистый креатив (без лишнего текста)
+    await bot.send_message(callback.from_user.id, header, parse_mode="HTML")
+
     if c["photo_file_id"]:
         await bot.send_photo(
             chat_id=callback.from_user.id,
             photo=c["photo_file_id"],
-            caption=full_text,
+            caption=result,
             parse_mode="HTML",
         )
     else:
-        await bot.send_message(callback.from_user.id, full_text, parse_mode="HTML", disable_web_page_preview=True)
+        await bot.send_message(callback.from_user.id, result, parse_mode="HTML", disable_web_page_preview=True)
     await callback.answer()
 
 
@@ -466,25 +466,21 @@ async def cb_creo_apply_with_link(callback: CallbackQuery, bot: Bot):
 
     link_url = l["link"]
     result = apply_template(c["template"], link_url)
-    full_text = (
-        f"✏️ <b>{html.escape(c['name'])}</b>\n\n"
-        f"{result}\n\n"
-        "<i>Скопируй и вставь в рекламный пост.</i>"
-    )
+    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой креатив.</i>"
 
-    # Удаляем сообщение с кнопками и отправляем единый результат
     try:
         await callback.message.delete()
     except Exception:
         pass
 
+    await bot.send_message(user_id, header, parse_mode="HTML")
     if c["photo_file_id"]:
         await bot.send_photo(
             chat_id=user_id,
             photo=c["photo_file_id"],
-            caption=full_text,
+            caption=result,
             parse_mode="HTML",
         )
     else:
-        await bot.send_message(user_id, full_text, parse_mode="HTML", disable_web_page_preview=True)
+        await bot.send_message(user_id, result, parse_mode="HTML", disable_web_page_preview=True)
     await callback.answer()
