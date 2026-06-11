@@ -253,3 +253,33 @@ async def delete_creative(creative_id: int, user_id: int):
             (creative_id, user_id)
         )
         await db.commit()
+
+# ---------------------------------------------------------------------
+# New helpers for links (ownership-checked)
+async def get_links(user_id: int):
+    """Активные ссылки конкретного пользователя (alias для get_all_links)."""
+    # Reuse existing query used in get_all_links
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT il.*, c.channel_title, COUNT(lj.id) as joins_count
+            FROM invite_links il
+            LEFT JOIN channels c ON c.channel_id = il.channel_id AND c.added_by = il.created_by
+            LEFT JOIN link_joins lj ON lj.link_id = il.id
+            WHERE il.is_active = 1 AND il.created_by = ?
+            GROUP BY il.id
+            ORDER BY il.created_at DESC
+        """, (user_id,)) as cur:
+            return await cur.fetchall()
+
+
+async def get_link(link_id: int, user_id: int):
+    """Возвращает ссылку по id только если она принадлежит user_id и активна."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM invite_links WHERE id = ? AND created_by = ? AND is_active = 1",
+            (link_id, user_id)
+        ) as cur:
+            return await cur.fetchone()
+

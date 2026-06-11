@@ -251,7 +251,9 @@ async def cmd_links_stats(message: Message):
     if not has_links:
         text += "\nСсылок пока нет. Создай через «🔗 Создать ссылку»."
 
-    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Подставить в креатив", callback_data="links_apply_creo")]])
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
 
 
 # ── Авто-регистрация канала при пересылке ────────────────────────────
@@ -294,3 +296,40 @@ async def forward_from_channel(message: Message, bot: Bot):
         "с правом <b>Пригласительные ссылки</b>.",
         parse_mode="HTML"
     )
+
+
+@router.callback_query(F.data == "links_apply_creo")
+async def cb_links_apply_creo(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    links = await queries.get_links(user_id)
+    if not links:
+        await callback.answer("У тебя нет ссылок.", show_alert=True)
+        return
+
+    buttons = []
+    for l in links:
+        label = l["label"] or l["link"]
+        display = label if len(label) < 40 else label[:37] + "..."
+        buttons.append([InlineKeyboardButton(text=f"🔗 {display}", callback_data=f"link_apply_creo:{l['id']}")])
+
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="back_channels")])
+    try:
+        await callback.message.edit_text("Выбери ссылку для подстановки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception:
+        await callback.message.delete()
+        await callback.message.answer("Выбери ссылку для подстановки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("link_apply_creo:"))
+async def cb_link_apply_creo(callback: CallbackQuery):
+    link_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+    l = await queries.get_link(link_id, user_id)
+    if not l:
+        return await callback.answer("Ссылка не найдена.", show_alert=True)
+
+    link_url = l["link"]
+    # Вызов существующей функции, которая предложит шаблоны
+    await ask_apply_creative(callback.message, user_id, link_url)
+    await callback.answer()

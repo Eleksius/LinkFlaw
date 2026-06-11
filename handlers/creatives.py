@@ -73,6 +73,7 @@ def creative_actions_kb(creative_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"creo_edit:{creative_id}"),
             InlineKeyboardButton(text="🗑 Удалить",        callback_data=f"creo_delete:{creative_id}"),
         ],
+        [InlineKeyboardButton(text="🔗 Подставить ссылку", callback_data=f"creo_apply_choose:{creative_id}")],
         [InlineKeyboardButton(text="◀️ К списку", callback_data="creo_list")],
     ])
 
@@ -379,42 +380,111 @@ async def cb_apply_creative(callback: CallbackQuery, bot: Bot):
         return await callback.answer("Шаблон не найден.", show_alert=True)
 
     result = apply_template(c["template"], link_url)
-    # caption = (
-    #     f"✏️ <b>{html.escape(c['name'])}</b>\n\n"
-    #     f"{result}\n\n"
-    #     "<i>Скопируй и вставь в рекламный пост.</i>"
-    # )
-    caption = (
+    full_text = (
         f"✏️ <b>{html.escape(c['name'])}</b>\n\n"
-        "<i>Вот твой рекламный пост.</i>"
+        f"{result}\n\n"
+        "<i>Скопируй и вставь в рекламный пост.</i>"
     )
 
-    await bot.send_message(
-        chat_id=callback.from_user.id,
-        text=caption,
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+    # Удаляем сообщение с кнопками (если возможно), затем отправляем единое сообщение с результатом
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
     if c["photo_file_id"]:
-        await callback.message.delete()
         await bot.send_photo(
             chat_id=callback.from_user.id,
             photo=c["photo_file_id"],
-            caption=result,
+            caption=full_text,
             parse_mode="HTML",
-            #disable_web_page_preview=True
         )
     else:
-        await callback.message.edit_text(
-            caption,
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
+        await bot.send_message(callback.from_user.id, full_text, parse_mode="HTML", disable_web_page_preview=True)
     await callback.answer()
 
 
 @router.callback_query(F.data == "creo_skip")
 async def cb_creo_skip(callback: CallbackQuery):
     await callback.message.delete()
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("creo_apply_choose:"))
+async def cb_creo_apply_choose(callback: CallbackQuery):
+    # Показываем список ссылок пользователя для выбора
+    creative_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+
+    # Проверим, что шаблон существует
+    c = await queries.get_creative(creative_id, user_id)
+    if not c:
+        return await callback.answer("Креатив не найден.", show_alert=True)
+
+    links = await queries.get_links(user_id)
+    if not links:
+        await callback.answer("У тебя нет ссылок.", show_alert=True)
+        return
+
+    buttons = []
+    for l in links:
+        # Показываем метку и домен/сокращённый URL
+        label = l["label"] or l["link"]
+        display = label if len(label) < 40 else label[:37] + "..."
+        buttons.append([InlineKeyboardButton(text=f"🔗 {display}", callback_data=f"creo_apply_with_link:{creative_id}:{l['id']}")])
+
+    buttons.append([
+        InlineKeyboardButton(text="◀️ Назад", callback_data=f"creo_view:{creative_id}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="creo_list"),
+    ])
+
+    try:
+        await callback.message.edit_text(
+            "Выбери ссылку для подстановки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML"
+        )
+    except Exception:
+        await callback.message.delete()
+        await callback.message.answer("Выбери ссылку для подстановки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("creo_apply_with_link:"))
+async def cb_creo_apply_with_link(callback: CallbackQuery, bot: Bot):
+    # creo_apply_with_link:<creative_id>:<link_id>
+    parts = callback.data.split(":")
+    creative_id = int(parts[1])
+    link_id = int(parts[2])
+    user_id = callback.from_user.id
+
+    c = await queries.get_creative(creative_id, user_id)
+    if not c:
+        return await callback.answer("Креатив не найден.", show_alert=True)
+
+    l = await queries.get_link(link_id, user_id)
+    if not l:
+        return await callback.answer("Ссылка не найдена.", show_alert=True)
+
+    link_url = l["link"]
+    result = apply_template(c["template"], link_url)
+    full_text = (
+        f"✏️ <b>{html.escape(c['name'])}</b>\n\n"
+        f"{result}\n\n"
+        "<i>Скопируй и вставь в рекламный пост.</i>"
+    )
+
+    # Удаляем сообщение с кнопками и отправляем единый результат
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    if c["photo_file_id"]:
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=c["photo_file_id"],
+            caption=full_text,
+            parse_mode="HTML",
+        )
+    else:
+        await bot.send_message(user_id, full_text, parse_mode="HTML", disable_web_page_preview=True)
     await callback.answer()
