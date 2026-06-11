@@ -168,10 +168,23 @@ async def cmd_create_link(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
 
-    await message.answer(
-        "📢 Выбери канал для создания ссылки:",
-        reply_markup=channel_select_kb(channels)
-    )
+    # Попробуем показать иллюстрацию к экрану создания ссылки
+    import os
+    from aiogram.types import FSInputFile
+    img_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "images", "create_link.png"))
+    if os.path.isfile(img_path):
+        photo = FSInputFile(img_path)
+        await message.answer_photo(
+            photo=photo,
+            caption="📢 Выбери канал для создания ссылки:",
+            reply_markup=channel_select_kb(channels),
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            "📢 Выбери канал для создания ссылки:",
+            reply_markup=channel_select_kb(channels)
+        )
     await state.set_state(CreateLinkStates.waiting_channel)
 
 
@@ -253,6 +266,8 @@ async def cmd_links_stats(message: Message):
             "Добавь канал и создай первую ссылку!"
         )
 
+    # Формируем подробный текст со статистикой и клавиатуру
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     text = (
         "📊 <b>Мои ссылки</b>\n\n"
         f"📢 Каналов: <b>{total['total_channels']}</b>  "
@@ -273,9 +288,75 @@ async def cmd_links_stats(message: Message):
     if not has_links:
         text += "\nСсылок пока нет. Создай через «🔗 Создать ссылку»."
 
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Подставить в креатив", callback_data="links_apply_creo")]])
-    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
+
+    # Попробуем показать иллюстрацию к экрану со ссылками — если есть, отправим фото с клавиатурой, затем текст без клавиатуры
+    import os
+    from aiogram.types import FSInputFile
+    img_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "images", "my_links.png"))
+    if os.path.isfile(img_path):
+        # Сначала проверим, доступна ли Pillow
+        try:
+            import PIL  # type: ignore
+            pil_available = True
+        except Exception:
+            pil_available = False
+
+        if pil_available:
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                import textwrap
+                import tempfile
+                from uuid import uuid4
+
+                base = Image.open(img_path).convert("RGB")
+                # Параметры шрифта
+                try:
+                    font = ImageFont.truetype("arial.ttf", 18)
+                except Exception:
+                    font = ImageFont.load_default()
+
+                # Подготовим текстовую часть и обернём по ширине
+                max_chars = 60
+                wrapped = textwrap.wrap(text, width=max_chars)
+                line_h = font.getsize("A")[1] + 6
+                padding = 16
+                text_height = line_h * len(wrapped) + padding
+
+                new_w = base.width
+                new_h = base.height + text_height
+                new_img = Image.new("RGB", (new_w, new_h), (255, 255, 255))
+                new_img.paste(base, (0, 0))
+                draw = ImageDraw.Draw(new_img)
+
+                y = base.height + padding // 2
+                x = padding // 2
+                fill = (20, 20, 20)
+                for line in wrapped:
+                    draw.text((x, y), line, font=font, fill=fill)
+                    y += line_h
+
+                tmp_path = os.path.join(tempfile.gettempdir(), f"links_{user_id}_{uuid4().hex}.png")
+                new_img.save(tmp_path, format="PNG")
+
+                photo = FSInputFile(tmp_path)
+                await message.answer_photo(photo=photo, caption="📊 <b>Мои ссылки</b>", parse_mode="HTML", reply_markup=kb)
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            except Exception:
+                # Если что-то пошло не так при рендеринге — падаём к более простому варианту ниже
+                pil_available = False
+
+        if not pil_available:
+            # Отправляем фото с укороченным caption, чтобы это было одно сообщение
+            cap = text if len(text) <= 1024 else text[:1020] + "..."
+            photo = FSInputFile(img_path)
+            await message.answer_photo(photo=photo, caption=cap, parse_mode="HTML", reply_markup=kb)
+    else:
+        # Если картинки нет — отправляем текст с клавиатурой
+        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb)
 
 
 # ── Авто-регистрация канала при пересылке ────────────────────────────

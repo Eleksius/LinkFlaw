@@ -125,10 +125,87 @@ async def show_creatives_list(target: Message | CallbackQuery, user_id: int):
         text = f"✏️ <b>Мои креативы</b> ({len(creatives)})\n\nВыбери для просмотра или 🗑 для удаления:"
         kb = creatives_list_kb(creatives)
 
-    if isinstance(target, Message):
-        await target.answer(text, reply_markup=kb, parse_mode="HTML")
+    # Попробуем отправить всё в одном сообщении: объединённое фото + текст (Pillow), иначе укороченный caption
+    import os
+    from aiogram.types import FSInputFile
+    img_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "images", "my_creo.png"))
+
+    # Походка: если вызов через CallbackQuery — удаляем старое сообщение, чтобы отправлять новое единое
+    if not isinstance(target, Message):
+        try:
+            await target.message.delete()
+        except Exception:
+            pass
+
+    if os.path.isfile(img_path):
+        # Сформируем полный текст списка креативов (одна строка уже есть в text), добавим детали по креативам
+        details = ""
+        for c in creatives:
+            icon = "🖼" if c["photo_file_id"] else "✏️"
+            details += f"\n{icon} {c['name']}\n"
+
+        full_text = text + "\n" + details
+
+        # Попробуем использовать Pillow для рендеринга одного PNG
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import textwrap
+            import tempfile
+            from uuid import uuid4
+
+            base = Image.open(img_path).convert("RGB")
+            try:
+                font = ImageFont.truetype("arial.ttf", 18)
+            except Exception:
+                font = ImageFont.load_default()
+
+            max_chars = 60
+            wrapped = textwrap.wrap(full_text, width=max_chars)
+            line_h = font.getsize("A")[1] + 6
+            padding = 16
+            text_height = line_h * len(wrapped) + padding
+
+            new_w = base.width
+            new_h = base.height + text_height
+            new_img = Image.new("RGB", (new_w, new_h), (255, 255, 255))
+            new_img.paste(base, (0, 0))
+            draw = ImageDraw.Draw(new_img)
+
+            y = base.height + padding // 2
+            x = padding // 2
+            fill = (20, 20, 20)
+            for line in wrapped:
+                draw.text((x, y), line, font=font, fill=fill)
+                y += line_h
+
+            tmp_path = os.path.join(tempfile.gettempdir(), f"creo_{user_id}_{uuid4().hex}.png")
+            new_img.save(tmp_path, format="PNG")
+
+            photo = FSInputFile(tmp_path)
+            # Отправляем единое фото с клавиатурой
+            if isinstance(target, Message):
+                await target.answer_photo(photo=photo, caption=f"✏️ <b>Мои креативы</b> ({len(creatives)})", parse_mode="HTML", reply_markup=kb)
+            else:
+                await target.message.answer_photo(photo=photo, caption=f"✏️ <b>Мои креативы</b> ({len(creatives)})", parse_mode="HTML", reply_markup=kb)
+
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        except Exception:
+            # Фолбэк: отправляем фото с укороченным caption (одно сообщение)
+            cap = full_text if len(full_text) <= 1024 else full_text[:1020] + "..."
+            photo = FSInputFile(img_path)
+            if isinstance(target, Message):
+                await target.answer_photo(photo=photo, caption=cap, parse_mode="HTML", reply_markup=kb)
+            else:
+                await target.message.answer_photo(photo=photo, caption=cap, parse_mode="HTML", reply_markup=kb)
     else:
-        await target.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        # Нет картинки — отправляем текст с клавиатурой
+        if isinstance(target, Message):
+            await target.answer(full_text if 'full_text' in locals() else text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await target.message.answer(full_text if 'full_text' in locals() else text, reply_markup=kb, parse_mode="HTML")
 
 
 # ── Список: кнопка + команда ──────────────────────────────────────────
