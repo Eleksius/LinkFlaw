@@ -54,13 +54,26 @@ CREATE TABLE IF NOT EXISTS creatives (
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     template TEXT NOT NULL,
+    photo_file_id TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, name)
 );
+"""
+
+# Миграция — добавляем колонку photo_file_id к существующей таблице creatives
+ADD_PHOTO_COLUMN = """
+ALTER TABLE creatives ADD COLUMN photo_file_id TEXT;
 """
 
 async def migrate_db():
     """Применяет новые миграции к существующей БД."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(ADD_CREATIVES_TABLE)
+
+        # Добавляем photo_file_id если колонки ещё нет
+        async with db.execute("PRAGMA table_info(creatives)") as cur:
+            columns = [row[1] for row in await cur.fetchall()]
+        if "photo_file_id" not in columns:
+            await db.execute(ADD_PHOTO_COLUMN)
+
         await db.commit()

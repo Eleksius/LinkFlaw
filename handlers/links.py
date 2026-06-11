@@ -1,8 +1,9 @@
 from aiogram import Router, Bot, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, MessageOriginChannel
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from db import queries
 from utils.formatters import fmt_link_row
@@ -255,13 +256,38 @@ async def cmd_links_stats(message: Message):
 
 # ── Авто-регистрация канала при пересылке ────────────────────────────
 
-@router.message(F.forward_from_chat)
-async def forward_from_channel(message: Message):
-    chat = message.forward_from_chat
-    if chat.type not in ("channel", "supergroup"):
-        return await message.answer("❌ Это не канал. Перешли сообщение из канала.")
+@router.message(F.forward_origin.type == "channel")
+async def forward_from_channel(message: Message, bot: Bot):
+    origin: MessageOriginChannel = message.forward_origin
+    chat = origin.chat
 
-    await queries.add_channel(chat.id, chat.title, message.from_user.id)
+    user_id = message.from_user.id
+
+    # Проверяем, является ли пользователь администратором этого канала
+    try:
+        member = await bot.get_chat_member(chat_id=chat.id, user_id=user_id)
+        if member.status not in ("administrator", "creator"):
+            return await message.answer(
+                f"❌ Ты не являешься администратором канала <b>{chat.title}</b>.\n\n"
+                "Добавить канал могут только его администраторы.",
+                parse_mode="HTML"
+            )
+    except TelegramForbiddenError:
+        return await message.answer(
+            f"❌ Бот не добавлен в канал <b>{chat.title}</b> или не имеет доступа.\n\n"
+            "Сначала добавь бота в канал как <b>администратора</b> "
+            "с правом <b>Пригласительные ссылки</b>.",
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        return await message.answer(
+            f"❌ Не удалось проверить права в канале <b>{chat.title}</b>.\n\n"
+            f"Убедись, что бот добавлен в канал как администратор.\n\n"
+            f"<code>{e}</code>",
+            parse_mode="HTML"
+        )
+
+    await queries.add_channel(chat.id, chat.title, user_id)
     await message.answer(
         f"✅ Канал <b>{chat.title}</b> добавлен!\n\n"
         "Убедись, что бот добавлен в этот канал как администратор "

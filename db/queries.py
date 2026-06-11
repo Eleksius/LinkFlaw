@@ -213,13 +213,15 @@ async def get_total_stats():
 
 # ── Creatives ──────────────────────────────────────────────────────────
 
-async def save_creative(user_id: int, name: str, template: str) -> int:
+async def save_creative(user_id: int, name: str, template: str, photo_file_id: str | None = None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("""
-            INSERT INTO creatives (user_id, name, template)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id, name) DO UPDATE SET template = excluded.template
-        """, (user_id, name, template))
+            INSERT INTO creatives (user_id, name, template, photo_file_id)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, name) DO UPDATE SET
+                template = excluded.template,
+                photo_file_id = excluded.photo_file_id
+        """, (user_id, name, template, photo_file_id))
         await db.commit()
         return cur.lastrowid
 
