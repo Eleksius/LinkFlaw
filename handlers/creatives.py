@@ -1,5 +1,6 @@
 import html
 import re
+import logging
 
 from aiogram import Router, Bot, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -8,7 +9,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import queries
+from utils.image_sender import send_with_photo
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 # Плейсхолдер, который пользователь пишет в шаблоне
@@ -20,8 +23,8 @@ HYPERLINK_RE = re.compile(r'\[([^\]]+)\]\(\{link\}\)')
 
 class CreativeStates(StatesGroup):
     waiting_name = State()
-    waiting_template = State()   # ждём текст (и опционально фото)
-    editing_template = State()   # то же при редактировании
+    waiting_template = State()
+    editing_template = State()
 
 
 # ── Применение шаблона ────────────────────────────────────────────────
@@ -29,10 +32,9 @@ class CreativeStates(StatesGroup):
 def apply_template(template: str, link_url: str) -> str:
     result = HYPERLINK_RE.sub(
         lambda m: f'<a href="{html.escape(link_url)}">{m.group(1)}</a>',
-        template
+        template,
     )
-    result = result.replace(PLACEHOLDER, link_url)
-    return result
+    return result.replace(PLACEHOLDER, link_url)
 
 
 def _preview(template: str) -> str:
@@ -46,11 +48,8 @@ def _has_placeholder(template: str) -> bool:
 def _extract_text_and_photo(message: Message):
     """Возвращает (text, photo_file_id) из сообщения — с фото или без."""
     if message.photo:
-        text = (message.caption or "").strip()
-        photo_file_id = message.photo[-1].file_id  # берём наибольшее разрешение
-        return text, photo_file_id
-    else:
-        return (message.text or "").strip(), None
+        return (message.caption or "").strip(), message.photo[-1].file_id
+    return (message.text or "").strip(), None
 
 
 # ── Клавиатуры ────────────────────────────────────────────────────────
@@ -98,8 +97,8 @@ TEMPLATE_HELP = (
     "<b>Варианты:</b>\n"
     "• Голая ссылка:\n"
     "  <code>Подписывайся 👉 {link}</code>\n\n"
-    "• Гиперссылка (кликабельный текст):\n"
-    "  <code>Подписывайся 👉 [нажми сюда]({link})</code>\n"
+    "• Кликабельный текст:\n"
+    "  <code>[нажми сюда]({link})</code>\n"
     "  <code>[🔥 Лучший канал о крипте]({link})</code>\n\n"
     "  Формат: <code>[текст]({link})</code>\n\n"
     "📸 <b>Хочешь добавить фото?</b> Отправь фото с подписью, где есть <code>{link}</code>."
@@ -110,102 +109,30 @@ TEMPLATE_HELP = (
 
 async def show_creatives_list(target: Message | CallbackQuery, user_id: int):
     creatives = await queries.get_creatives(user_id)
+
     if not creatives:
         text = (
             "✏️ <b>Мои креативы</b>\n\n"
             "У тебя пока нет шаблонов.\n\n"
             + TEMPLATE_HELP
         )
-        from handlers.keyboards import inline_main_kb
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Создать первый креатив", callback_data="creo_new")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
         ])
     else:
         text = f"✏️ <b>Мои креативы</b> ({len(creatives)})\n\nВыбери для просмотра или 🗑 для удаления:"
         kb = creatives_list_kb(creatives)
 
-    # Попробуем отправить всё в одном сообщении: объединённое фото + текст (Pillow), иначе укороченный caption
-    import os
-    from aiogram.types import FSInputFile
-    img_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "images", "my_creo.png"))
-
-    # Походка: если вызов через CallbackQuery — удаляем старое сообщение, чтобы отправлять новое единое
-    if not isinstance(target, Message):
+    # Удаляем старое сообщение при возврате через callback
+    if isinstance(target, CallbackQuery):
         try:
             await target.message.delete()
         except Exception:
             pass
 
-    if os.path.isfile(img_path):
-        # Сформируем полный текст списка креативов (одна строка уже есть в text), добавим детали по креативам
-        details = ""
-        for c in creatives:
-            icon = "🖼" if c["photo_file_id"] else "✏️"
-            details += f"\n{icon} {c['name']}\n"
-
-        full_text = text + "\n" + details
-
-        # Попробуем использовать Pillow для рендеринга одного PNG
-        try:
-            from PIL import Image, ImageDraw, ImageFont
-            import textwrap
-            import tempfile
-            from uuid import uuid4
-
-            base = Image.open(img_path).convert("RGB")
-            try:
-                font = ImageFont.truetype("arial.ttf", 18)
-            except Exception:
-                font = ImageFont.load_default()
-
-            max_chars = 60
-            wrapped = textwrap.wrap(full_text, width=max_chars)
-            line_h = font.getsize("A")[1] + 6
-            padding = 16
-            text_height = line_h * len(wrapped) + padding
-
-            new_w = base.width
-            new_h = base.height + text_height
-            new_img = Image.new("RGB", (new_w, new_h), (255, 255, 255))
-            new_img.paste(base, (0, 0))
-            draw = ImageDraw.Draw(new_img)
-
-            y = base.height + padding // 2
-            x = padding // 2
-            fill = (20, 20, 20)
-            for line in wrapped:
-                draw.text((x, y), line, font=font, fill=fill)
-                y += line_h
-
-            tmp_path = os.path.join(tempfile.gettempdir(), f"creo_{user_id}_{uuid4().hex}.png")
-            new_img.save(tmp_path, format="PNG")
-
-            photo = FSInputFile(tmp_path)
-            # Отправляем единое фото с клавиатурой
-            if isinstance(target, Message):
-                await target.answer_photo(photo=photo, caption=f"✏️ <b>Мои креативы</b> ({len(creatives)})", parse_mode="HTML", reply_markup=kb)
-            else:
-                await target.message.answer_photo(photo=photo, caption=f"✏️ <b>Мои креативы</b> ({len(creatives)})", parse_mode="HTML", reply_markup=kb)
-
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-        except Exception:
-            # Фолбэк: отправляем фото с укороченным caption (одно сообщение)
-            cap = full_text if len(full_text) <= 1024 else full_text[:1020] + "..."
-            photo = FSInputFile(img_path)
-            if isinstance(target, Message):
-                await target.answer_photo(photo=photo, caption=cap, parse_mode="HTML", reply_markup=kb)
-            else:
-                await target.message.answer_photo(photo=photo, caption=cap, parse_mode="HTML", reply_markup=kb)
-    else:
-        # Нет картинки — отправляем текст с клавиатурой
-        if isinstance(target, Message):
-            await target.answer(full_text if 'full_text' in locals() else text, reply_markup=kb, parse_mode="HTML")
-        else:
-            await target.message.answer(full_text if 'full_text' in locals() else text, reply_markup=kb, parse_mode="HTML")
+    msg = target if isinstance(target, Message) else target.message
+    await send_with_photo(msg, "my_creo.png", text, reply_markup=kb, parse_mode="HTML")
 
 
 # ── Список: кнопка + команда ──────────────────────────────────────────
@@ -245,12 +172,18 @@ async def cb_creative_view(callback: CallbackQuery, bot: Bot):
             photo=c["photo_file_id"],
             caption=caption,
             parse_mode="HTML",
-            reply_markup=kb
+            reply_markup=kb,
         )
     else:
-        await callback.message.edit_text(
-            caption, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb
-        )
+        try:
+            await callback.message.edit_text(
+                caption, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb
+            )
+        except Exception:
+            await callback.message.delete()
+            await callback.message.answer(
+                caption, parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb
+            )
     await callback.answer()
 
 
@@ -258,13 +191,23 @@ async def cb_creative_view(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data == "creo_new")
 async def cb_creative_new(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "✏️ <b>Новый креатив — шаг 1/2</b>\n\n"
-        "Введи название шаблона:\n"
-        "<i>Например: Пост у блогера, Баннер апрель</i>",
-        parse_mode="HTML",
-        reply_markup=cancel_kb()
-    )
+    try:
+        await callback.message.edit_text(
+            "✏️ <b>Новый креатив — шаг 1/2</b>\n\n"
+            "Введи название шаблона:\n"
+            "<i>Например: Пост у блогера, Баннер апрель</i>",
+            parse_mode="HTML",
+            reply_markup=cancel_kb(),
+        )
+    except Exception:
+        await callback.message.delete()
+        await callback.message.answer(
+            "✏️ <b>Новый креатив — шаг 1/2</b>\n\n"
+            "Введи название шаблона:\n"
+            "<i>Например: Пост у блогера, Баннер апрель</i>",
+            parse_mode="HTML",
+            reply_markup=cancel_kb(),
+        )
     await state.set_state(CreativeStates.waiting_name)
     await callback.answer()
 
@@ -277,7 +220,7 @@ async def process_creative_name(message: Message, state: FSMContext):
     if len(name) > 64:
         return await message.answer(
             "❌ Название слишком длинное (макс. 64 символа). Попробуй ещё:",
-            reply_markup=cancel_kb()
+            reply_markup=cancel_kb(),
         )
     await state.update_data(creative_name=name)
     await message.answer(
@@ -286,7 +229,7 @@ async def process_creative_name(message: Message, state: FSMContext):
         "Теперь отправь текст шаблона (или фото с подписью):\n\n"
         + TEMPLATE_HELP,
         parse_mode="HTML",
-        reply_markup=cancel_kb()
+        reply_markup=cancel_kb(),
     )
     await state.set_state(CreativeStates.waiting_template)
 
@@ -300,7 +243,7 @@ async def process_creative_template(message: Message, state: FSMContext):
             f"❌ В шаблоне нет <code>{PLACEHOLDER}</code> — некуда подставлять ссылку.\n\n"
             + TEMPLATE_HELP,
             parse_mode="HTML",
-            reply_markup=cancel_kb()
+            reply_markup=cancel_kb(),
         )
 
     data = await state.get_data()
@@ -314,11 +257,7 @@ async def process_creative_template(message: Message, state: FSMContext):
         f"<b>Пример:</b>\n\n{_preview(template)}"
     )
     if photo_file_id:
-        await message.answer_photo(
-            photo=photo_file_id,
-            caption=preview_text,
-            parse_mode="HTML"
-        )
+        await message.answer_photo(photo=photo_file_id, caption=preview_text, parse_mode="HTML")
     else:
         await message.answer(preview_text, parse_mode="HTML", disable_web_page_preview=True)
 
@@ -339,8 +278,6 @@ async def cb_creative_edit(callback: CallbackQuery, state: FSMContext):
         "Отправь новый текст или фото с подписью:\n\n"
         + TEMPLATE_HELP
     )
-    # Если сейчас есть фото — удаляем сообщение и отправляем текстом
-    # (edit_text не работает на photo-сообщениях)
     try:
         await callback.message.edit_text(text, parse_mode="HTML", reply_markup=cancel_kb())
     except Exception:
@@ -359,7 +296,7 @@ async def process_edit_template(message: Message, state: FSMContext):
         return await message.answer(
             f"❌ В шаблоне нет <code>{PLACEHOLDER}</code>.\n\n" + TEMPLATE_HELP,
             parse_mode="HTML",
-            reply_markup=cancel_kb()
+            reply_markup=cancel_kb(),
         )
 
     data = await state.get_data()
@@ -373,11 +310,7 @@ async def process_edit_template(message: Message, state: FSMContext):
         f"<b>Пример:</b>\n\n{_preview(template)}"
     )
     if photo_file_id:
-        await message.answer_photo(
-            photo=photo_file_id,
-            caption=preview_text,
-            parse_mode="HTML"
-        )
+        await message.answer_photo(photo=photo_file_id, caption=preview_text, parse_mode="HTML")
     else:
         await message.answer(preview_text, parse_mode="HTML", disable_web_page_preview=True)
 
@@ -434,7 +367,7 @@ async def ask_apply_creative(message: Message, user_id: int, link_url: str):
         icon = "🖼" if c["photo_file_id"] else "✏️"
         buttons.append([InlineKeyboardButton(
             text=f"{icon} {c['name']}",
-            callback_data=f"apply_creo:{c['id']}:{link_url}"
+            callback_data=f"apply_creo:{c['id']}:{link_url}",
         )])
     buttons.append([
         InlineKeyboardButton(text="➕ Новый шаблон", callback_data="creo_new"),
@@ -442,8 +375,9 @@ async def ask_apply_creative(message: Message, user_id: int, link_url: str):
     ])
 
     await message.answer(
-        "✏️ Подставить ссылку в шаблон?",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        "✏️ <b>Подставить ссылку в шаблон?</b>\n\nВыбери креатив:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
 
 
@@ -458,17 +392,14 @@ async def cb_apply_creative(callback: CallbackQuery, bot: Bot):
     if not c:
         return await callback.answer("Шаблон не найден.", show_alert=True)
 
-    # Генерируем результат и сначала отправляем заголовок
     result = apply_template(c["template"], link_url)
-    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой креатив.</i>"
+    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой готовый креатив:</i>"
 
-    # Удаляем сообщение с кнопками (если возможно)
     try:
         await callback.message.delete()
     except Exception:
         pass
 
-    # Сначала шлём заголовок, затем чистый креатив (без лишнего текста)
     await bot.send_message(callback.from_user.id, header, parse_mode="HTML")
 
     if c["photo_file_id"]:
@@ -479,23 +410,26 @@ async def cb_apply_creative(callback: CallbackQuery, bot: Bot):
             parse_mode="HTML",
         )
     else:
-        await bot.send_message(callback.from_user.id, result, parse_mode="HTML", disable_web_page_preview=True)
+        await bot.send_message(
+            callback.from_user.id, result, parse_mode="HTML", disable_web_page_preview=True
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data == "creo_skip")
 async def cb_creo_skip(callback: CallbackQuery):
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("creo_apply_choose:"))
 async def cb_creo_apply_choose(callback: CallbackQuery):
-    # Показываем список ссылок пользователя для выбора
     creative_id = int(callback.data.split(":")[1])
     user_id = callback.from_user.id
 
-    # Проверим, что шаблон существует
     c = await queries.get_creative(creative_id, user_id)
     if not c:
         return await callback.answer("Креатив не найден.", show_alert=True)
@@ -506,30 +440,34 @@ async def cb_creo_apply_choose(callback: CallbackQuery):
         return
 
     buttons = []
-    for l in links:
-        # Показываем метку и домен/сокращённый URL
-        label = l["label"] or l["link"]
-        display = label if len(label) < 40 else label[:37] + "..."
-        buttons.append([InlineKeyboardButton(text=f"🔗 {display}", callback_data=f"creo_apply_with_link:{creative_id}:{l['id']}")])
-
+    for lnk in links:
+        label = lnk["label"] or lnk["link"]
+        display = label if len(label) < 40 else label[:37] + "…"
+        buttons.append([InlineKeyboardButton(
+            text=f"🔗 {display}",
+            callback_data=f"creo_apply_with_link:{creative_id}:{lnk['id']}",
+        )])
     buttons.append([
-        InlineKeyboardButton(text="◀️ Назад", callback_data=f"creo_view:{creative_id}"),
+        InlineKeyboardButton(text="◀️ Назад",  callback_data=f"creo_view:{creative_id}"),
         InlineKeyboardButton(text="❌ Отмена", callback_data="creo_list"),
     ])
 
     try:
         await callback.message.edit_text(
-            "Выбери ссылку для подстановки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML"
+            "Выбери ссылку для подстановки:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
     except Exception:
         await callback.message.delete()
-        await callback.message.answer("Выбери ссылку для подстановки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.message.answer(
+            "Выбери ссылку для подстановки:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("creo_apply_with_link:"))
 async def cb_creo_apply_with_link(callback: CallbackQuery, bot: Bot):
-    # creo_apply_with_link:<creative_id>:<link_id>
     parts = callback.data.split(":")
     creative_id = int(parts[1])
     link_id = int(parts[2])
@@ -539,13 +477,12 @@ async def cb_creo_apply_with_link(callback: CallbackQuery, bot: Bot):
     if not c:
         return await callback.answer("Креатив не найден.", show_alert=True)
 
-    l = await queries.get_link(link_id, user_id)
-    if not l:
+    lnk = await queries.get_link(link_id, user_id)
+    if not lnk:
         return await callback.answer("Ссылка не найдена.", show_alert=True)
 
-    link_url = l["link"]
-    result = apply_template(c["template"], link_url)
-    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой креатив.</i>"
+    result = apply_template(c["template"], lnk["link"])
+    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой готовый креатив:</i>"
 
     try:
         await callback.message.delete()
