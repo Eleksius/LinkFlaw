@@ -1,5 +1,13 @@
+import os
 import aiosqlite
 from config import DB_PATH
+
+
+def _ensure_db_dir():
+    """Создаёт директорию для файла БД, если её нет."""
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
 
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS channels (
@@ -43,6 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
 """
 
 async def init_db():
+    _ensure_db_dir()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(CREATE_TABLES)
         await db.commit()
