@@ -35,6 +35,24 @@ def cancel_kb() -> InlineKeyboardMarkup:
     ])
 
 
+# Новые общие inline клавиатуры для навигации
+def inline_back_menu_kb(back_callback: str = "back") -> InlineKeyboardMarkup:
+    """Возвращает клавиатуру с кнопками «◀️ Назад» и «🏠 Главное меню»."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="◀️ Назад", callback_data=back_callback),
+            InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")
+        ]
+    ])
+
+
+def inline_main_kb() -> InlineKeyboardMarkup:
+    """Клавиатура с одной кнопкой «🏠 Главное меню»."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+    ])
+
+
 def channels_manage_kb(channels: list) -> InlineKeyboardMarkup:
     buttons = []
     for ch in channels:

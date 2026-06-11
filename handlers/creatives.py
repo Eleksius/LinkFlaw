@@ -116,8 +116,10 @@ async def show_creatives_list(target: Message | CallbackQuery, user_id: int):
             "У тебя пока нет шаблонов.\n\n"
             + TEMPLATE_HELP
         )
+        from handlers.keyboards import inline_main_kb
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Создать первый креатив", callback_data="creo_new")]
+            [InlineKeyboardButton(text="➕ Создать первый креатив", callback_data="creo_new")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
         ])
     else:
         text = f"✏️ <b>Мои креативы</b> ({len(creatives)})\n\nВыбери для просмотра или 🗑 для удаления:"

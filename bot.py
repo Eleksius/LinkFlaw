@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message, ChatMemberUpdated, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
+from aiogram.types import Message, ChatMemberUpdated, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, FSInputFile
 from aiogram.filters import CommandStart, ChatMemberUpdatedFilter, JOIN_TRANSITION
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -34,16 +35,33 @@ async def cmd_start(message: Message):
     )
     from handlers.keyboards import main_kb, admin_main_kb
     is_adm = user.id in ADMIN_IDS
-    await message.answer(
+
+    caption_text = (
         "👋 Привет! Я помогаю создавать рекламные инвайт-ссылки и отслеживать переходы.\n\n"
         "<b>Как начать:</b>\n"
         "1. Добавь бота в свой канал как <b>администратора</b>\n"
         "2. Дай право <b>Пригласительные ссылки</b>\n"
         "3. Перешли сюда любое сообщение из этого канала\n"
-        "4. Создавай ссылки через кнопку <b>🔗 Создать ссылку</b>",
-        parse_mode="HTML",
-        reply_markup=admin_main_kb() if is_adm else main_kb()
+        "4. Создавай ссылки через кнопку <b>🔗 Создать ссылку</b>"
     )
+
+    # Отправляем приветственное изображение с подписью и клавиатурой
+    img_path = os.path.join(os.path.dirname(__file__), "images", "start.png")
+    if os.path.isfile(img_path):
+        photo = FSInputFile(img_path)
+        await message.answer_photo(
+            photo=photo,
+            caption=caption_text,
+            parse_mode="HTML",
+            reply_markup=admin_main_kb() if is_adm else main_kb()
+        )
+    else:
+        # Если картинка отсутствует — отправляем текст
+        await message.answer(
+            caption_text,
+            parse_mode="HTML",
+            reply_markup=admin_main_kb() if is_adm else main_kb()
+        )
 
 
 @dp.chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))

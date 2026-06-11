@@ -23,7 +23,29 @@ class CreateLinkStates(StatesGroup):
 @router.callback_query(F.data == "cancel_action")
 async def cb_cancel_action(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("❌ Действие отменено.")
+    from handlers.keyboards import main_kb, admin_main_kb
+    user_id = callback.from_user.id
+    is_adm = user_id in __import__("config").ADMIN_IDS
+    try:
+        await callback.message.edit_text("❌ Действие отменено.", reply_markup=admin_main_kb() if is_adm else main_kb())
+    except Exception:
+        await callback.message.delete()
+        await callback.message.answer("❌ Действие отменено.", reply_markup=admin_main_kb() if is_adm else main_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "main_menu")
+async def cb_main_menu(callback: CallbackQuery):
+    from handlers.keyboards import main_kb, admin_main_kb
+    user_id = callback.from_user.id
+    is_adm = user_id in __import__("config").ADMIN_IDS
+    try:
+        await callback.message.edit_text(
+            "🏠 Главное меню", reply_markup=admin_main_kb() if is_adm else main_kb()
+        )
+    except Exception:
+        await callback.message.delete()
+        await callback.message.answer("🏠 Главное меню", reply_markup=admin_main_kb() if is_adm else main_kb())
     await callback.answer()
 
 
