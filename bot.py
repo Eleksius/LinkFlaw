@@ -5,9 +5,10 @@ import os
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message, ChatMemberUpdated, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, FSInputFile
 from aiogram.filters import CommandStart, ChatMemberUpdatedFilter, JOIN_TRANSITION
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import MemoryStorage  # fallback, не используется напрямую
+from storage import SQLiteStorage
 
-from config import BOT_TOKEN, ADMIN_IDS
+from config import BOT_TOKEN, ADMIN_IDS, is_admin
 from db.models import init_db, migrate_db
 from db import queries
 from handlers import links, stats, admin, creatives
@@ -19,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher(storage=SQLiteStorage())
 
 dp.include_router(links.router)
 dp.include_router(stats.router)
@@ -34,7 +35,7 @@ async def cmd_start(message: Message):
         user.id, user.username or "", user.first_name or "", user.last_name or ""
     )
     from handlers.keyboards import main_kb, admin_main_kb
-    is_adm = user.id in ADMIN_IDS
+    is_adm = is_admin(user.id)
 
     caption_text = (
         "👋 Привет! Я помогаю создавать рекламные инвайт-ссылки и отслеживать переходы.\n\n"

@@ -7,14 +7,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import queries
-from config import ADMIN_IDS
+from config import is_admin
 from handlers.keyboards import broadcast_confirm_kb
 
 router = Router()
-
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
 
 
 class BroadcastStates(StatesGroup):

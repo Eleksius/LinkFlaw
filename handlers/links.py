@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from config import ADMIN_IDS
+from config import is_admin
 from db import queries
 from utils.formatters import fmt_link_row
 from utils.image_sender import send_with_photo
@@ -32,18 +32,13 @@ class CreateLinkStates(StatesGroup):
     waiting_label = State()
 
 
-# ── Хелпер: is_admin ──────────────────────────────────────────────────
-
-def _is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
 
 # ── Отмена / Главное меню ─────────────────────────────────────────────
 
 @router.callback_query(F.data == "cancel_action")
 async def cb_cancel_action(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    kb = admin_main_kb() if _is_admin(callback.from_user.id) else main_kb()
+    kb = admin_main_kb() if is_admin(callback.from_user.id) else main_kb()
     try:
         await callback.message.edit_text("❌ Действие отменено.", reply_markup=kb)
     except Exception:
@@ -53,8 +48,9 @@ async def cb_cancel_action(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "main_menu")
-async def cb_main_menu(callback: CallbackQuery):
-    kb = admin_main_kb() if _is_admin(callback.from_user.id) else main_kb()
+async def cb_main_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    kb = admin_main_kb() if is_admin(callback.from_user.id) else main_kb()
     try:
         await callback.message.edit_text("🏠 Главное меню", reply_markup=kb)
     except Exception:
@@ -253,7 +249,7 @@ async def process_label(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     channel_id = data["channel_id"]
     channel_title = data["channel_title"]
-    await state.clear()
+    # Не очищаем state здесь — ask_apply_creative запишет в него pending_link_url
 
     try:
         link_obj = await bot.create_chat_invite_link(
@@ -275,8 +271,9 @@ async def process_label(message: Message, state: FSMContext, bot: Bot):
             f"🔗 <code>{link_url}</code>",
             parse_mode="HTML",
         )
-        await ask_apply_creative(message, message.from_user.id, link_url)
+        await ask_apply_creative(message, message.from_user.id, link_url, state)
     except Exception as e:
+        await state.clear()
         await message.answer(
             f"❌ Не удалось создать ссылку.\n"
             f"Убедись, что бот является администратором канала с правом «Пригласительные ссылки».\n\n"
@@ -359,11 +356,23 @@ async def forward_from_channel(message: Message, bot: Bot):
             parse_mode="HTML",
         )
 
+    # Проверяем, что у бота есть право создавать инвайт-ссылки
+    try:
+        bot_member = await bot.get_chat_member(chat_id=chat.id, user_id=(await bot.get_me()).id)
+        can_invite = getattr(bot_member, "can_invite_users", None)
+        if can_invite is False:
+            return await message.answer(
+                f"❌ Бот добавлен в канал <b>{chat.title}</b>, но у него нет права "
+                "<b>Пригласительные ссылки</b>.\n\n"
+                "Зайди в настройки канала → Администраторы → бот → включи это право.",
+                parse_mode="HTML",
+            )
+    except Exception:
+        pass  # Если не удалось проверить — не блокируем, ошибка всплывёт при создании ссылки
+
     await queries.add_channel(chat.id, chat.title, user_id)
     await message.answer(
-        f"✅ Канал <b>{chat.title}</b> добавлен!\n\n"
-        "Убедись, что бот добавлен в этот канал как администратор "
-        "с правом <b>Пригласительные ссылки</b>.",
+        f"✅ Канал <b>{chat.title}</b> добавлен!",
         parse_mode="HTML",
     )
 
@@ -400,12 +409,12 @@ async def cb_links_apply_creo(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("link_apply_creo:"))
-async def cb_link_apply_creo(callback: CallbackQuery):
+async def cb_link_apply_creo(callback: CallbackQuery, state: FSMContext):
     link_id = int(callback.data.split(":")[1])
     user_id = callback.from_user.id
     lnk = await queries.get_link(link_id, user_id)
     if not lnk:
         return await callback.answer("Ссылка не найдена.", show_alert=True)
 
-    await ask_apply_creative(callback.message, user_id, lnk["link"])
+    await ask_apply_creative(callback.message, user_id, lnk["link"], state)
     await callback.answer()

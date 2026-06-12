@@ -9,3 +9,7 @@ DB_PATH = os.getenv("DB_PATH", "bot.db")
 
 # Для будущего расширения (PostgreSQL, Redis и т.д.)
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{DB_PATH}")
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS

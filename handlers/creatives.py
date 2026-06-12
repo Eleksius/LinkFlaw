@@ -25,6 +25,7 @@ class CreativeStates(StatesGroup):
     waiting_name = State()
     waiting_template = State()
     editing_template = State()
+    applying_link = State()   # ожидание выбора креатива для подстановки ссылки
 
 
 # ── Применение шаблона ────────────────────────────────────────────────
@@ -357,17 +358,21 @@ async def cb_cancel_creo(callback: CallbackQuery, state: FSMContext):
 
 # ── Подстановка в шаблон после создания ссылки ───────────────────────
 
-async def ask_apply_creative(message: Message, user_id: int, link_url: str):
+async def ask_apply_creative(message: Message, user_id: int, link_url: str, state: FSMContext):
     creatives = await queries.get_creatives(user_id)
     if not creatives:
         return
+
+    # Сохраняем URL в FSMContext — не кладём его в callback_data (лимит 64 байта)
+    await state.set_state(CreativeStates.applying_link)
+    await state.update_data(pending_link_url=link_url)
 
     buttons = []
     for c in creatives:
         icon = "🖼" if c["photo_file_id"] else "✏️"
         buttons.append([InlineKeyboardButton(
             text=f"{icon} {c['name']}",
-            callback_data=f"apply_creo:{c['id']}:{link_url}",
+            callback_data=f"apply_creo:{c['id']}",
         )])
     buttons.append([
         InlineKeyboardButton(text="➕ Новый шаблон", callback_data="creo_new"),
@@ -381,16 +386,21 @@ async def ask_apply_creative(message: Message, user_id: int, link_url: str):
     )
 
 
-@router.callback_query(F.data.startswith("apply_creo:"))
-async def cb_apply_creative(callback: CallbackQuery, bot: Bot):
-    # apply_creo:<id>:<url>  — url может содержать ":", поэтому maxsplit=2
-    parts = callback.data.split(":", 2)
-    creative_id = int(parts[1])
-    link_url = parts[2]
+@router.callback_query(F.data.startswith("apply_creo:"), CreativeStates.applying_link)
+async def cb_apply_creative(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    creative_id = int(callback.data.split(":")[1])
+
+    data = await state.get_data()
+    link_url = data.get("pending_link_url")
+    if not link_url:
+        await state.clear()
+        return await callback.answer("Сессия истекла. Создай ссылку заново.", show_alert=True)
 
     c = await queries.get_creative(creative_id, callback.from_user.id)
     if not c:
         return await callback.answer("Шаблон не найден.", show_alert=True)
+
+    await state.clear()
 
     result = apply_template(c["template"], link_url)
     header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой готовый креатив:</i>"
@@ -417,7 +427,8 @@ async def cb_apply_creative(callback: CallbackQuery, bot: Bot):
 
 
 @router.callback_query(F.data == "creo_skip")
-async def cb_creo_skip(callback: CallbackQuery):
+async def cb_creo_skip(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     try:
         await callback.message.delete()
     except Exception:

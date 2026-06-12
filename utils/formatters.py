@@ -17,5 +17,3 @@ def fmt_link_row(label: str, link: str, joins: int, created_at: str) -> str:
     )
 
 
-def fmt_channel_option(idx: int, title: str, channel_id: int) -> str:
-    return f"{idx}. <b>{title}</b> (<code>{channel_id}</code>)"

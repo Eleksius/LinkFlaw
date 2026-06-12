@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS link_joins (
     link_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (link_id) REFERENCES invite_links(id)
+    FOREIGN KEY (link_id) REFERENCES invite_links(id),
+    UNIQUE(link_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -84,5 +85,15 @@ async def migrate_db():
             columns = [row[1] for row in await cur.fetchall()]
         if "photo_file_id" not in columns:
             await db.execute(ADD_PHOTO_COLUMN)
+
+        # Добавляем уникальный индекс на link_joins(link_id, user_id) если его нет
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='uq_link_joins'"
+        ) as cur:
+            exists = await cur.fetchone()
+        if not exists:
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_link_joins ON link_joins(link_id, user_id)"
+            )
 
         await db.commit()
