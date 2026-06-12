@@ -16,6 +16,7 @@ from config import is_admin
 from db import queries
 from utils.formatters import fmt_link_row
 from utils.image_sender import send_with_photo
+from utils.pagination import paginate, nav_row, total_pages
 from handlers.keyboards import (
     channel_select_kb, channels_manage_kb,
     confirm_delete_channel_kb, cancel_kb,
@@ -59,7 +60,12 @@ async def cb_main_menu(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ── Мои каналы ────────────────────────────────────────────────────────
+# ── Пагинация: нажатие на счётчик страниц («1 / 3») ──────────────────
+
+@router.callback_query(F.data == "page_noop")
+async def cb_page_noop(callback: CallbackQuery):
+    await callback.answer()
+
 
 async def show_channels(target: Message | CallbackQuery, user_id: int):
     channels = await queries.get_channels(user_id)
@@ -258,7 +264,7 @@ async def process_label(message: Message, state: FSMContext, bot: Bot):
             creates_join_request=False,
         )
         link_url = link_obj.invite_link
-        await queries.save_invite_link(
+        link_id = await queries.save_invite_link(
             channel_id=channel_id,
             label=label,
             link=link_url,
@@ -268,8 +274,12 @@ async def process_label(message: Message, state: FSMContext, bot: Bot):
             f"✅ Ссылка создана!\n\n"
             f"📢 Канал: <b>{channel_title}</b>\n"
             f"🏷 Метка: <b>{label}</b>\n\n"
-            f"🔗 <code>{link_url}</code>",
+            f"🔗 <code>{link_url}</code>\n\n"
+            f"📥 Переходов: <b>0</b>",
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📊 Обновить статистику", callback_data=f"link_stat:{link_id}"),
+            ]]),
         )
         await ask_apply_creative(message, message.from_user.id, link_url, state)
     except Exception as e:
@@ -379,6 +389,25 @@ async def forward_from_channel(message: Message, bot: Bot):
 
 # ── Подстановка ссылки в креатив ──────────────────────────────────────
 
+def _links_apply_kb(links: list, page: int, cancel_cb: str = "back_channels") -> InlineKeyboardMarkup:
+    """Клавиатура выбора ссылки для подстановки — с пагинацией."""
+    page_items = paginate(links, page)
+    buttons = []
+    for lnk in page_items:
+        label = lnk["label"] or lnk["link"]
+        display = label if len(label) < 40 else label[:37] + "…"
+        buttons.append([InlineKeyboardButton(
+            text=f"🔗 {display}", callback_data=f"link_apply_creo:{lnk['id']}"
+        )])
+
+    nav = nav_row(links, page, cb_prefix="links_apply_page")
+    if nav:
+        buttons.append(nav)
+
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.callback_query(F.data == "links_apply_creo")
 async def cb_links_apply_creo(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -387,24 +416,32 @@ async def cb_links_apply_creo(callback: CallbackQuery):
         await callback.answer("У тебя нет ссылок.", show_alert=True)
         return
 
-    buttons = []
-    for lnk in links:
-        label = lnk["label"] or lnk["link"]
-        display = label if len(label) < 40 else label[:37] + "…"
-        buttons.append([InlineKeyboardButton(text=f"🔗 {display}", callback_data=f"link_apply_creo:{lnk['id']}")])
-
-    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="back_channels")])
     try:
         await callback.message.edit_text(
             "Выбери ссылку для подстановки в креатив:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            reply_markup=_links_apply_kb(links, page=0),
         )
     except Exception:
         await callback.message.delete()
         await callback.message.answer(
             "Выбери ссылку для подстановки в креатив:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+            reply_markup=_links_apply_kb(links, page=0),
         )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("links_apply_page:"))
+async def cb_links_apply_page(callback: CallbackQuery):
+    page = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+    links = await queries.get_links(user_id)
+    if not links:
+        return await callback.answer("У тебя нет ссылок.", show_alert=True)
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=_links_apply_kb(links, page))
+    except Exception:
+        pass
     await callback.answer()
 
 
@@ -418,3 +455,33 @@ async def cb_link_apply_creo(callback: CallbackQuery, state: FSMContext):
 
     await ask_apply_creative(callback.message, user_id, lnk["link"], state)
     await callback.answer()
+
+
+# ── Быстрая статистика ссылки ─────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("link_stat:"))
+async def cb_link_stat(callback: CallbackQuery):
+    link_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+
+    row = await queries.get_link_stats(link_id, user_id)
+    if not row:
+        return await callback.answer("Ссылка не найдена.", show_alert=True)
+
+    text = (
+        f"✅ Ссылка создана!\n\n"
+        f"📢 Канал: <b>{row['channel_title'] or '—'}</b>\n"
+        f"🏷 Метка: <b>{row['label']}</b>\n\n"
+        f"🔗 <code>{row['link']}</code>\n\n"
+        f"📥 Переходов: <b>{row['joins_count']}</b>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📊 Обновить статистику", callback_data=f"link_stat:{link_id}"),
+    ]])
+
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass  # текст не изменился — Telegram вернёт ошибку, игнорируем
+
+    await callback.answer("Обновлено ✓")

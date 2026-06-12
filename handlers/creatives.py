@@ -3,13 +3,16 @@ import re
 import logging
 
 from aiogram import Router, Bot, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import queries
 from utils.image_sender import send_with_photo
+from utils.pagination import paginate, nav_row, total_pages, PER_PAGE
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -30,7 +33,35 @@ class CreativeStates(StatesGroup):
 
 # ── Применение шаблона ────────────────────────────────────────────────
 
+async def _send_creative_result(
+    bot: Bot,
+    user_id: int,
+    c,           # aiosqlite.Row креатива
+    link_url: str,
+) -> None:
+    """Отправить готовый креатив с заголовком."""
+    result = apply_template(c["template"], link_url)
+    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой готовый креатив:</i>"
+
+    await bot.send_message(user_id, header, parse_mode="HTML")
+
+    if c["photo_file_id"]:
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=c["photo_file_id"],
+            caption=result,
+            parse_mode="HTML",
+        )
+    else:
+        await bot.send_message(
+            user_id, result,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+
+
 def apply_template(template: str, link_url: str) -> str:
+    """Подставляет ссылку в шаблон: [текст]({link}) → HTML-гиперссылка, {link} → голый URL."""
     result = HYPERLINK_RE.sub(
         lambda m: f'<a href="{html.escape(link_url)}">{m.group(1)}</a>',
         template,
@@ -55,14 +86,20 @@ def _extract_text_and_photo(message: Message):
 
 # ── Клавиатуры ────────────────────────────────────────────────────────
 
-def creatives_list_kb(creatives: list) -> InlineKeyboardMarkup:
+def creatives_list_kb(creatives: list, page: int = 0) -> InlineKeyboardMarkup:
+    page_items = paginate(creatives, page)
     buttons = []
-    for c in creatives:
+    for c in page_items:
         icon = "🖼" if c["photo_file_id"] else "✏️"
         buttons.append([
             InlineKeyboardButton(text=f"{icon} {c['name']}", callback_data=f"creo_view:{c['id']}"),
             InlineKeyboardButton(text="🗑",                   callback_data=f"creo_delete:{c['id']}"),
         ])
+
+    nav = nav_row(creatives, page, cb_prefix="creo_page")
+    if nav:
+        buttons.append(nav)
+
     buttons.append([InlineKeyboardButton(text="➕ Новый креатив", callback_data="creo_new")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -108,7 +145,7 @@ TEMPLATE_HELP = (
 
 # ── Хелпер: показать список ───────────────────────────────────────────
 
-async def show_creatives_list(target: Message | CallbackQuery, user_id: int):
+async def show_creatives_list(target: Message | CallbackQuery, user_id: int, page: int = 0):
     creatives = await queries.get_creatives(user_id)
 
     if not creatives:
@@ -122,8 +159,14 @@ async def show_creatives_list(target: Message | CallbackQuery, user_id: int):
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
         ])
     else:
-        text = f"✏️ <b>Мои креативы</b> ({len(creatives)})\n\nВыбери для просмотра или 🗑 для удаления:"
-        kb = creatives_list_kb(creatives)
+        pages = total_pages(creatives)
+        page = max(0, min(page, pages - 1))  # защита от выхода за границы
+        text = (
+            f"✏️ <b>Мои креативы</b> ({len(creatives)})\n\n"
+            f"Выбери для просмотра или 🗑 для удаления:"
+            + (f"\n<i>Страница {page + 1} из {pages}</i>" if pages > 1 else "")
+        )
+        kb = creatives_list_kb(creatives, page)
 
     # Удаляем старое сообщение при возврате через callback
     if isinstance(target, CallbackQuery):
@@ -147,6 +190,13 @@ async def cmd_creatives(message: Message):
 @router.callback_query(F.data == "creo_list")
 async def cb_creatives_list(callback: CallbackQuery):
     await show_creatives_list(callback, callback.from_user.id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("creo_page:"))
+async def cb_creo_page(callback: CallbackQuery):
+    page = int(callback.data.split(":")[1])
+    await show_creatives_list(callback, callback.from_user.id, page)
     await callback.answer()
 
 
@@ -402,27 +452,12 @@ async def cb_apply_creative(callback: CallbackQuery, bot: Bot, state: FSMContext
 
     await state.clear()
 
-    result = apply_template(c["template"], link_url)
-    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой готовый креатив:</i>"
-
     try:
         await callback.message.delete()
     except Exception:
         pass
 
-    await bot.send_message(callback.from_user.id, header, parse_mode="HTML")
-
-    if c["photo_file_id"]:
-        await bot.send_photo(
-            chat_id=callback.from_user.id,
-            photo=c["photo_file_id"],
-            caption=result,
-            parse_mode="HTML",
-        )
-    else:
-        await bot.send_message(
-            callback.from_user.id, result, parse_mode="HTML", disable_web_page_preview=True
-        )
+    await _send_creative_result(bot, callback.from_user.id, c, link_url)
     await callback.answer()
 
 
@@ -450,30 +485,61 @@ async def cb_creo_apply_choose(callback: CallbackQuery):
         await callback.answer("У тебя нет ссылок.", show_alert=True)
         return
 
+    await _show_creo_link_picker(callback, creative_id, links, page=0)
+    await callback.answer()
+
+
+def _creo_link_picker_kb(creative_id: int, links: list, page: int) -> InlineKeyboardMarkup:
+    page_items = paginate(links, page)
     buttons = []
-    for lnk in links:
+    for lnk in page_items:
         label = lnk["label"] or lnk["link"]
         display = label if len(label) < 40 else label[:37] + "…"
         buttons.append([InlineKeyboardButton(
             text=f"🔗 {display}",
             callback_data=f"creo_apply_with_link:{creative_id}:{lnk['id']}",
         )])
+
+    nav = nav_row(links, page, cb_prefix=f"creo_link_page:{creative_id}")
+    if nav:
+        buttons.append(nav)
+
     buttons.append([
         InlineKeyboardButton(text="◀️ Назад",  callback_data=f"creo_view:{creative_id}"),
         InlineKeyboardButton(text="❌ Отмена", callback_data="creo_list"),
     ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+
+async def _show_creo_link_picker(
+    callback: CallbackQuery, creative_id: int, links: list, page: int
+) -> None:
+    kb = _creo_link_picker_kb(creative_id, links, page)
     try:
-        await callback.message.edit_text(
-            "Выбери ссылку для подстановки:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        )
+        await callback.message.edit_text("Выбери ссылку для подстановки:", reply_markup=kb)
     except Exception:
         await callback.message.delete()
-        await callback.message.answer(
-            "Выбери ссылку для подстановки:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        await callback.message.answer("Выбери ссылку для подстановки:", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("creo_link_page:"))
+async def cb_creo_link_page(callback: CallbackQuery):
+    # creo_link_page:<creative_id>:<page>
+    parts = callback.data.split(":")
+    creative_id = int(parts[1])
+    page = int(parts[2])
+    user_id = callback.from_user.id
+
+    links = await queries.get_links(user_id)
+    if not links:
+        return await callback.answer("У тебя нет ссылок.", show_alert=True)
+
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=_creo_link_picker_kb(creative_id, links, page)
         )
+    except Exception:
+        pass
     await callback.answer()
 
 
@@ -492,22 +558,10 @@ async def cb_creo_apply_with_link(callback: CallbackQuery, bot: Bot):
     if not lnk:
         return await callback.answer("Ссылка не найдена.", show_alert=True)
 
-    result = apply_template(c["template"], lnk["link"])
-    header = f"✏️ <b>{html.escape(c['name'])}</b>\n\n<i>Вот твой готовый креатив:</i>"
-
     try:
         await callback.message.delete()
     except Exception:
         pass
 
-    await bot.send_message(user_id, header, parse_mode="HTML")
-    if c["photo_file_id"]:
-        await bot.send_photo(
-            chat_id=user_id,
-            photo=c["photo_file_id"],
-            caption=result,
-            parse_mode="HTML",
-        )
-    else:
-        await bot.send_message(user_id, result, parse_mode="HTML", disable_web_page_preview=True)
+    await _send_creative_result(bot, user_id, c, lnk["link"])
     await callback.answer()

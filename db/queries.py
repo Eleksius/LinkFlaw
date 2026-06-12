@@ -136,7 +136,23 @@ async def get_all_links(user_id: int):
             return await cur.fetchall()
 
 
-async def get_link_by_id(link_id: int):
+async def get_link_stats(link_id: int, user_id: int):
+    """Статистика одной ссылки — для inline-обновления после создания."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT il.id, il.label, il.link, il.created_at,
+                   c.channel_title,
+                   COUNT(lj.id) as joins_count
+            FROM invite_links il
+            LEFT JOIN channels c ON c.channel_id = il.channel_id AND c.added_by = il.created_by
+            LEFT JOIN link_joins lj ON lj.link_id = il.id
+            WHERE il.id = ? AND il.created_by = ?
+            GROUP BY il.id
+        """, (link_id, user_id)) as cur:
+            return await cur.fetchone()
+
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM invite_links WHERE id = ?", (link_id,)) as cur:
